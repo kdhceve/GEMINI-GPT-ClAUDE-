@@ -1,0 +1,119 @@
+import networkx as nx
+import random
+import math
+
+class Vehicle:
+    """
+    각 차량 에이전트의 상태와 행동을 관리하는 클래스
+    """
+    def __init__(self, vehicle_id, start_node, end_node, city_map):
+        self.v_id = vehicle_id
+        self.current_node = start_node
+        self.target_node = end_node
+        self.city_map = city_map
+        self.path = []
+        self.is_arrived = False
+        
+        # 초기 경로 계산
+        self.recalculate_path()
+
+    def recalculate_path(self):
+        """
+        Dijkstra 알고리즘을 사용하여 최적 경로 재계산
+        예외 처리: 경로가 단절되었을 경우를 대비한 로직 포함
+        """
+        try:
+            self.path = nx.shortest_path(
+                self.city_map, 
+                source=self.current_node, 
+                target=self.target_node, 
+                weight='weight'
+            )
+            # 현재 서 있는 노드는 경로에서 제외
+            if self.path and self.path[0] == self.current_node:
+                self.path.pop(0)
+        except nx.NetworkXNoPath:
+            self.path = []
+            print(f"[Warning] 차량 {self.v_id}: {self.target_node}로 가는 경로가 끊겼습니다.")
+
+    def move(self):
+        """
+        한 단계(Step) 이동 수행
+        """
+        if not self.path:
+            if self.current_node == self.target_node:
+                self.is_arrived = True
+            return
+
+        # 다음 노드로 이동
+        next_node = self.path.pop(0)
+        self.current_node = next_node
+        
+        if self.current_node == self.target_node:
+            self.is_arrived = True
+            print(f"[Info] 차량 {self.v_id}: 목적지 도착!")
+
+class TrafficSimulationEngine:
+    """
+    시뮬레이션 환경 및 전체 흐름 제어
+    """
+    def __init__(self, grid_size=5):
+        # 1. 맵 생성 (Grid Graph)
+        self.grid_size = grid_size
+        self.city_map = nx.grid_2d_graph(grid_size, grid_size)
+        
+        # 도로별 가중치(혼잡도) 초기화 (기본값 1.0)
+        for u, v in self.city_map.edges():
+            self.city_map[u][v]['weight'] = 1.0
+            
+        self.vehicles = []
+
+    def add_vehicle(self, v_id):
+        """차량 생성 및 무작위 목적지 배정"""
+        nodes = list(self.city_map.nodes())
+        start, end = random.sample(nodes, 2)
+        vehicle = Vehicle(v_id, start, end, self.city_map)
+        self.vehicles.append(vehicle)
+
+    def update_step(self):
+        """시뮬레이션 1프레임 업데이트"""
+        for v in self.vehicles:
+            if not v.is_arrived:
+                v.move()
+
+    def simulate_accident(self, node_a, node_b):
+        """
+        사고 발생 예외 상황 시뮬레이션
+        특정 간선의 가중치를 무한대로 설정하여 통행 불가 처리
+        """
+        if self.city_map.has_edge(node_a, node_b):
+            self.city_map[node_a][node_b]['weight'] = 9999.0 # 사실상 통행 불가
+            print(f"\n[EVENT] 사고 발생! 구간 폐쇄: {node_a} <-> {node_b}")
+            
+            # 모든 차량에게 경로 재탐색 명령 (사고 인지)
+            for v in self.vehicles:
+                v.recalculate_path()
+
+# --- 실행부 ---
+if __name__ == "__main__":
+    # 1. 엔진 초기화 (5x5 도시)
+    engine = TrafficSimulationEngine(grid_size=5)
+    
+    # 2. 차량 3대 생성
+    for i in range(3):
+        engine.add_vehicle(f"CAR_{i}")
+
+    # 3. 시뮬레이션 진행 (기본 이동)
+    print("--- 시뮬레이션 시작 ---")
+    for step in range(3):
+        print(f"\n[Step {step}]")
+        engine.update_step()
+
+    # 4. 돌발 상황 발생 (예외 처리 테스트)
+    # 임의의 도로 하나를 차단
+    engine.simulate_accident((0,0), (0,1))
+    
+    # 5. 사고 이후 이동 관찰
+    for step in range(3, 6):
+        print(f"\n[Step {step}]")
+        engine.update_step()
