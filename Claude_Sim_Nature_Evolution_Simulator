@@ -1,0 +1,496 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from matplotlib.patches import Circle
+from dataclasses import dataclass
+from typing import List
+import random
+
+@dataclass
+class Genome:
+    """생명체의 유전자"""
+    speed: float        # 속도
+    size: float         # 크기
+    vision: float       # 시야 범위
+    energy_efficiency: float  # 에너지 효율
+
+class Creature:
+    """생명체 기본 클래스"""
+    def __init__(self, x, y, genome=None, generation=1):
+        self.x = x
+        self.y = y
+        self.generation = generation
+        
+        if genome is None:
+            self.genome = Genome(
+                speed=random.uniform(0.5, 2.0),
+                size=random.uniform(3, 8),
+                vision=random.uniform(30, 80),
+                energy_efficiency=random.uniform(0.7, 1.3)
+            )
+        else:
+            self.genome = genome
+        
+        self.energy = 100
+        self.age = 0
+        self.alive = True
+        
+    def move_random(self, world_size):
+        """랜덤 이동"""
+        angle = random.uniform(0, 2 * np.pi)
+        dx = np.cos(angle) * self.genome.speed
+        dy = np.sin(angle) * self.genome.speed
+        
+        self.x = (self.x + dx) % world_size
+        self.y = (self.y + dy) % world_size
+        
+        # 에너지 소모
+        self.energy -= self.genome.speed * 0.3 / self.genome.energy_efficiency
+        
+    def move_towards(self, target_x, target_y, world_size):
+        """목표를 향해 이동"""
+        dx = target_x - self.x
+        dy = target_y - self.y
+        
+        # 토러스 형태 최단거리 계산
+        if abs(dx) > world_size / 2:
+            dx = dx - np.sign(dx) * world_size
+        if abs(dy) > world_size / 2:
+            dy = dy - np.sign(dy) * world_size
+        
+        dist = np.sqrt(dx**2 + dy**2)
+        if dist > 0:
+            dx = (dx / dist) * self.genome.speed
+            dy = (dy / dist) * self.genome.speed
+            
+            self.x = (self.x + dx) % world_size
+            self.y = (self.y + dy) % world_size
+            
+        self.energy -= self.genome.speed * 0.5 / self.genome.energy_efficiency
+        
+    def distance_to(self, other_x, other_y, world_size):
+        """다른 객체까지의 거리 (토러스 형태)"""
+        dx = abs(self.x - other_x)
+        dy = abs(self.y - other_y)
+        
+        if dx > world_size / 2:
+            dx = world_size - dx
+        if dy > world_size / 2:
+            dy = world_size - dy
+            
+        return np.sqrt(dx**2 + dy**2)
+    
+    def mutate_genome(self, mutation_rate=0.1):
+        """유전자 돌연변이"""
+        return Genome(
+            speed=max(0.3, self.genome.speed + random.gauss(0, mutation_rate)),
+            size=max(2, min(12, self.genome.size + random.gauss(0, mutation_rate * 0.5))),
+            vision=max(20, min(120, self.genome.vision + random.gauss(0, mutation_rate * 10))),
+            energy_efficiency=max(0.5, min(2.0, self.genome.energy_efficiency + random.gauss(0, mutation_rate * 0.2)))
+        )
+
+class Herbivore(Creature):
+    """초식동물"""
+    def __init__(self, x, y, genome=None, generation=1):
+        super().__init__(x, y, genome, generation)
+        self.energy = 80
+        self.reproduction_cooldown = 0
+        
+    def update(self, plants, carnivores, world_size):
+        if not self.alive:
+            return
+            
+        self.age += 1
+        self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
+        
+        # 육식동물 회피
+        nearest_predator = None
+        min_predator_dist = float('inf')
+        
+        for carnivore in carnivores:
+            if carnivore.alive:
+                dist = self.distance_to(carnivore.x, carnivore.y, world_size)
+                if dist < min_predator_dist and dist < self.genome.vision:
+                    min_predator_dist = dist
+                    nearest_predator = carnivore
+        
+        # 위험하면 도망
+        if nearest_predator and min_predator_dist < self.genome.vision * 0.7:
+            # 반대 방향으로 도망
+            dx = self.x - nearest_predator.x
+            dy = self.y - nearest_predator.y
+            if abs(dx) > world_size / 2:
+                dx = dx - np.sign(dx) * world_size
+            if abs(dy) > world_size / 2:
+                dy = dy - np.sign(dy) * world_size
+            
+            dist = np.sqrt(dx**2 + dy**2)
+            if dist > 0:
+                escape_x = self.x + (dx / dist) * self.genome.speed * 1.5
+                escape_y = self.y + (dy / dist) * self.genome.speed * 1.5
+                self.x = escape_x % world_size
+                self.y = escape_y % world_size
+            self.energy -= self.genome.speed * 0.7 / self.genome.energy_efficiency
+        else:
+            # 식물 찾기
+            nearest_plant = None
+            min_dist = float('inf')
+            
+            for plant in plants:
+                dist = self.distance_to(plant.x, plant.y, world_size)
+                if dist < min_dist and dist < self.genome.vision:
+                    min_dist = dist
+                    nearest_plant = plant
+            
+            if nearest_plant:
+                self.move_towards(nearest_plant.x, nearest_plant.y, world_size)
+                
+                # 식물 먹기
+                if min_dist < self.genome.size:
+                    self.energy += 40
+                    plants.remove(nearest_plant)
+            else:
+                self.move_random(world_size)
+        
+        # 에너지 소모
+        self.energy -= 0.2
+        
+        # 죽음
+        if self.energy <= 0 or self.age > 1000:
+            self.alive = False
+    
+    def can_reproduce(self):
+        return self.energy > 120 and self.reproduction_cooldown == 0
+
+class Carnivore(Creature):
+    """육식동물"""
+    def __init__(self, x, y, genome=None, generation=1):
+        super().__init__(x, y, genome, generation)
+        self.energy = 120
+        self.reproduction_cooldown = 0
+        
+    def update(self, herbivores, world_size):
+        if not self.alive:
+            return
+            
+        self.age += 1
+        self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
+        
+        # 가장 가까운 먹이 찾기
+        nearest_prey = None
+        min_dist = float('inf')
+        
+        for herbivore in herbivores:
+            if herbivore.alive:
+                dist = self.distance_to(herbivore.x, herbivore.y, world_size)
+                if dist < min_dist and dist < self.genome.vision:
+                    min_dist = dist
+                    nearest_prey = herbivore
+        
+        if nearest_prey:
+            self.move_towards(nearest_prey.x, nearest_prey.y, world_size)
+            
+            # 사냥
+            if min_dist < self.genome.size + nearest_prey.genome.size:
+                nearest_prey.alive = False
+                self.energy += 60
+        else:
+            self.move_random(world_size)
+        
+        # 에너지 소모 (육식동물은 더 많이 소모)
+        self.energy -= 0.4
+        
+        # 죽음
+        if self.energy <= 0 or self.age > 800:
+            self.alive = False
+    
+    def can_reproduce(self):
+        return self.energy > 150 and self.reproduction_cooldown == 0
+
+class Plant:
+    """식물"""
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+class Ecosystem:
+    """생태계 시뮬레이션"""
+    def __init__(self, world_size=400, mutation_rate=0.1):
+        self.world_size = world_size
+        self.mutation_rate = mutation_rate
+        
+        self.herbivores: List[Herbivore] = []
+        self.carnivores: List[Carnivore] = []
+        self.plants: List[Plant] = []
+        
+        self.max_generation = 1
+        
+        # 통계
+        self.history = {
+            'herbivore_count': [],
+            'carnivore_count': [],
+            'plant_count': [],
+            'avg_herbivore_speed': [],
+            'avg_carnivore_speed': [],
+            'generation': []
+        }
+        
+        # 초기 개체 생성
+        self.initialize()
+        
+    def initialize(self):
+        """초기 생태계 설정"""
+        # 초식동물 30마리
+        for _ in range(30):
+            x = random.uniform(0, self.world_size)
+            y = random.uniform(0, self.world_size)
+            self.herbivores.append(Herbivore(x, y))
+        
+        # 육식동물 8마리
+        for _ in range(8):
+            x = random.uniform(0, self.world_size)
+            y = random.uniform(0, self.world_size)
+            self.carnivores.append(Carnivore(x, y))
+        
+        # 식물 80개
+        for _ in range(80):
+            x = random.uniform(0, self.world_size)
+            y = random.uniform(0, self.world_size)
+            self.plants.append(Plant(x, y))
+    
+    def update(self):
+        """한 프레임 업데이트"""
+        # 초식동물 업데이트
+        for herbivore in self.herbivores[:]:
+            herbivore.update(self.plants, self.carnivores, self.world_size)
+        
+        # 육식동물 업데이트
+        for carnivore in self.carnivores[:]:
+            carnivore.update(self.herbivores, self.world_size)
+        
+        # 죽은 개체 제거
+        self.herbivores = [h for h in self.herbivores if h.alive]
+        self.carnivores = [c for c in self.carnivores if c.alive]
+        
+        # 번식
+        self.reproduce()
+        
+        # 식물 재생
+        if len(self.plants) < 120 and random.random() < 0.3:
+            for _ in range(random.randint(1, 3)):
+                x = random.uniform(0, self.world_size)
+                y = random.uniform(0, self.world_size)
+                self.plants.append(Plant(x, y))
+        
+        # 통계 기록
+        self.record_stats()
+    
+    def reproduce(self):
+        """번식 처리"""
+        new_herbivores = []
+        for herbivore in self.herbivores:
+            if herbivore.can_reproduce():
+                # 자손 생성 (돌연변이 포함)
+                child_genome = herbivore.mutate_genome(self.mutation_rate)
+                child = Herbivore(
+                    herbivore.x + random.uniform(-10, 10),
+                    herbivore.y + random.uniform(-10, 10),
+                    genome=child_genome,
+                    generation=herbivore.generation + 1
+                )
+                new_herbivores.append(child)
+                herbivore.energy -= 50
+                herbivore.reproduction_cooldown = 50
+                self.max_generation = max(self.max_generation, child.generation)
+        
+        new_carnivores = []
+        for carnivore in self.carnivores:
+            if carnivore.can_reproduce():
+                child_genome = carnivore.mutate_genome(self.mutation_rate)
+                child = Carnivore(
+                    carnivore.x + random.uniform(-10, 10),
+                    carnivore.y + random.uniform(-10, 10),
+                    genome=child_genome,
+                    generation=carnivore.generation + 1
+                )
+                new_carnivores.append(child)
+                carnivore.energy -= 70
+                carnivore.reproduction_cooldown = 60
+                self.max_generation = max(self.max_generation, child.generation)
+        
+        self.herbivores.extend(new_herbivores)
+        self.carnivores.extend(new_carnivores)
+    
+    def record_stats(self):
+        """통계 기록"""
+        self.history['herbivore_count'].append(len(self.herbivores))
+        self.history['carnivore_count'].append(len(self.carnivores))
+        self.history['plant_count'].append(len(self.plants))
+        
+        if self.herbivores:
+            avg_speed = np.mean([h.genome.speed for h in self.herbivores])
+            self.history['avg_herbivore_speed'].append(avg_speed)
+        else:
+            self.history['avg_herbivore_speed'].append(0)
+        
+        if self.carnivores:
+            avg_speed = np.mean([c.genome.speed for c in self.carnivores])
+            self.history['avg_carnivore_speed'].append(avg_speed)
+        else:
+            self.history['avg_carnivore_speed'].append(0)
+        
+        self.history['generation'].append(self.max_generation)
+
+def run_simulation():
+    """시뮬레이션 실행"""
+    ecosystem = Ecosystem(world_size=400, mutation_rate=0.1)
+    
+    fig = plt.figure(figsize=(16, 9))
+    
+    # 생태계 화면
+    ax_world = plt.subplot2grid((3, 3), (0, 0), colspan=2, rowspan=3)
+    ax_world.set_xlim(0, ecosystem.world_size)
+    ax_world.set_ylim(0, ecosystem.world_size)
+    ax_world.set_aspect('equal')
+    ax_world.set_facecolor('#0a0a0a')
+    ax_world.set_title('생태계 진화 시뮬레이션', fontsize=14, fontweight='bold', pad=15)
+    ax_world.tick_params(labelsize=8)
+    
+    # 개체수 그래프
+    ax_pop = plt.subplot2grid((3, 3), (0, 2))
+    ax_pop.set_title('개체수 변화', fontsize=10, fontweight='bold')
+    ax_pop.set_xlabel('프레임', fontsize=8)
+    ax_pop.set_ylabel('개체수', fontsize=8)
+    ax_pop.tick_params(labelsize=7)
+    ax_pop.grid(True, alpha=0.2)
+    
+    # 속도 진화 그래프
+    ax_speed = plt.subplot2grid((3, 3), (1, 2))
+    ax_speed.set_title('평균 속도 진화', fontsize=10, fontweight='bold')
+    ax_speed.set_xlabel('프레임', fontsize=8)
+    ax_speed.set_ylabel('속도', fontsize=8)
+    ax_speed.tick_params(labelsize=7)
+    ax_speed.grid(True, alpha=0.2)
+    
+    # 통계 텍스트
+    ax_stats = plt.subplot2grid((3, 3), (2, 2))
+    ax_stats.axis('off')
+    
+    plt.tight_layout()
+    
+    frame_count = [0]
+    
+    def animate(frame):
+        frame_count[0] += 1
+        
+        # 생태계 업데이트
+        ecosystem.update()
+        
+        # 화면 클리어
+        ax_world.clear()
+        ax_world.set_xlim(0, ecosystem.world_size)
+        ax_world.set_ylim(0, ecosystem.world_size)
+        ax_world.set_aspect('equal')
+        ax_world.set_facecolor('#0a0a0a')
+        ax_world.set_title('생태계 진화 시뮬레이션', fontsize=14, fontweight='bold', pad=15)
+        
+        # 식물 그리기
+        if ecosystem.plants:
+            plant_x = [p.x for p in ecosystem.plants]
+            plant_y = [p.y for p in ecosystem.plants]
+            ax_world.scatter(plant_x, plant_y, c='#5dcaa5', s=25, alpha=0.7, marker='o')
+        
+        # 초식동물 그리기
+        if ecosystem.herbivores:
+            herb_x = [h.x for h in ecosystem.herbivores]
+            herb_y = [h.y for h in ecosystem.herbivores]
+            herb_sizes = [h.genome.size * 12 for h in ecosystem.herbivores]
+            ax_world.scatter(herb_x, herb_y, c='#85b7eb', s=herb_sizes, alpha=0.8, marker='o', edgecolors='white', linewidths=0.5)
+        
+        # 육식동물 그리기
+        if ecosystem.carnivores:
+            carn_x = [c.x for c in ecosystem.carnivores]
+            carn_y = [c.y for c in ecosystem.carnivores]
+            carn_sizes = [c.genome.size * 12 for c in ecosystem.carnivores]
+            ax_world.scatter(carn_x, carn_y, c='#f09595', s=carn_sizes, alpha=0.9, marker='^', edgecolors='white', linewidths=0.5)
+        
+        # 개체수 그래프 업데이트
+        if frame_count[0] % 5 == 0:
+            ax_pop.clear()
+            ax_pop.set_title('개체수 변화', fontsize=10, fontweight='bold')
+            ax_pop.set_xlabel('프레임', fontsize=8)
+            ax_pop.set_ylabel('개체수', fontsize=8)
+            ax_pop.tick_params(labelsize=7)
+            ax_pop.grid(True, alpha=0.2)
+            
+            frames = range(len(ecosystem.history['herbivore_count']))
+            ax_pop.plot(frames, ecosystem.history['herbivore_count'], 'b-', label='초식동물', linewidth=1.5)
+            ax_pop.plot(frames, ecosystem.history['carnivore_count'], 'r-', label='육식동물', linewidth=1.5)
+            ax_pop.plot(frames, ecosystem.history['plant_count'], 'g-', label='식물', linewidth=1.5, alpha=0.6)
+            ax_pop.legend(fontsize=7, loc='upper right')
+            
+            # 속도 그래프 업데이트
+            ax_speed.clear()
+            ax_speed.set_title('평균 속도 진화', fontsize=10, fontweight='bold')
+            ax_speed.set_xlabel('프레임', fontsize=8)
+            ax_speed.set_ylabel('속도', fontsize=8)
+            ax_speed.tick_params(labelsize=7)
+            ax_speed.grid(True, alpha=0.2)
+            
+            ax_speed.plot(frames, ecosystem.history['avg_herbivore_speed'], 'b-', label='초식동물', linewidth=1.5)
+            ax_speed.plot(frames, ecosystem.history['avg_carnivore_speed'], 'r-', label='육식동물', linewidth=1.5)
+            ax_speed.legend(fontsize=7, loc='upper right')
+            
+            # 통계 텍스트 업데이트
+            ax_stats.clear()
+            ax_stats.axis('off')
+            
+            stats_text = f"""📊 실시간 통계
+            
+🟦 초식동물: {len(ecosystem.herbivores)}마리
+   평균 속도: {ecosystem.history['avg_herbivore_speed'][-1]:.2f}
+   세대: {ecosystem.max_generation}
+   
+🔺 육식동물: {len(ecosystem.carnivores)}마리
+   평균 속도: {ecosystem.history['avg_carnivore_speed'][-1]:.2f}
+   
+🟩 식물: {len(ecosystem.plants)}개
+
+⏱️ 프레임: {frame_count[0]}
+"""
+            ax_stats.text(0.1, 0.9, stats_text, transform=ax_stats.transAxes, 
+                         fontsize=8, verticalalignment='top', family='monospace')
+        
+        # 멸종 체크
+        if len(ecosystem.herbivores) == 0:
+            ax_world.text(ecosystem.world_size/2, ecosystem.world_size/2, 
+                         '초식동물 멸종!', ha='center', va='center', 
+                         fontsize=20, color='red', fontweight='bold')
+        
+        if len(ecosystem.carnivores) == 0:
+            ax_world.text(ecosystem.world_size/2, ecosystem.world_size/2 + 30, 
+                         '육식동물 멸종!', ha='center', va='center', 
+                         fontsize=20, color='orange', fontweight='bold')
+        
+        return []
+    
+    anim = animation.FuncAnimation(fig, animate, frames=None, interval=50, blit=True)
+    plt.show()
+
+if __name__ == '__main__':
+    print("🌍 생태계 진화 시뮬레이션 시작!")
+    print("=" * 50)
+    print("🟦 파란색 원 = 초식동물 (식물을 먹고, 포식자를 피함)")
+    print("🔺 빨간색 삼각형 = 육식동물 (초식동물을 사냥)")
+    print("🟩 초록색 점 = 식물 (초식동물의 먹이)")
+    print("=" * 50)
+    print("✨ 특징:")
+    print("  - 각 생명체는 고유한 유전자(속도, 크기, 시야)를 가짐")
+    print("  - 번식 시 돌연변이 발생 → 진화!")
+    print("  - 빠른 초식동물은 포식자를 피하기 쉬움")
+    print("  - 빠른 육식동물은 사냥에 유리함")
+    print("  - 오른쪽 그래프에서 진화 과정 관찰 가능")
+    print("=" * 50)
+    print("\n창을 닫으면 시뮬레이션이 종료됩니다.\n")
+    
+    run_simulation()
